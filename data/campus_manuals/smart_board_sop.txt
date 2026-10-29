@@ -1,0 +1,17 @@
+Campus AV Department - Interactive Smart Board Standard Operating Procedure (SOP-SB-02)
+Page 1: Touch Screen & Interactive Stylus Calibration
+1. Verify the USB touch cable (Type-A to Type-B) is securely plugged into both the teacher PC and the interactive board panel port labeled 'Touch Out 1'.
+2. If the stylus coordinates are misaligned or offset from your finger touch, open the 'SMART Settings' app from the desktop system tray and select 'Calibrate Screen'.
+3. Firmly press the center of each of the 9 target crosshairs shown sequentially on the board until a green checkmark appears.
+4. Ensure no physical obstruction, stickers, or dry erase dust blocks the optical sensors along the internal bezel edges.
+
+Page 2: Blank Screen & OPS Internal PC Troubleshooting
+1. Ensure the rocker master power switch beneath the bottom-right frame is flipped to 'I' (ON).
+2. Tap the power icon on the front convenience panel to wake the display from standby.
+3. If using the built-in OPS slot PC, tap 'Source' on the front panel and select 'OPS' or 'PC'.
+4. If the screen displays 'No Cable Connected', verify that the external HDMI 1 cable is firmly seated and toggle the input selector.
+
+Page 3: Wireless Casting & Annotation Freeze
+1. For AirPlay and Miracast wireless casting, ensure your laptop is connected to the 'Campus-Faculty-WiFi' subnet.
+2. If the annotation overlay freezes, press the physical 'Home' button on the front control panel and restart the Whiteboard app.
+3. Never use abrasive chemical cleaners or standard dry erase markers on interactive capacitive surfaces.

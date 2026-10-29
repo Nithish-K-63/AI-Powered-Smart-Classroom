@@ -1,0 +1,23 @@
+{
+  "name": "smart-classroom-av-assistant",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Smart Classroom AV Troubleshooting Assistant",
+  "scripts": {
+    "dev": "concurrently -k -n \"backend,frontend\" -c \"cyan,magenta\" \"npm run backend\" \"npm run frontend\"",
+    "backend": "node scripts/start_backend.js",
+    "frontend": "npm --prefix frontend run dev",
+    "start": "npm run dev",
+    "test": "python tests/run_tests.py"
+  },
+  "keywords": [
+    "campusassist",
+    "smart-classroom",
+    "av-helpdesk"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

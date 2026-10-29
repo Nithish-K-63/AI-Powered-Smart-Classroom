@@ -1,0 +1,1251 @@
+"""AI-Powered Smart Classroom AV Troubleshooting Assistant.
+
+Frontend matching the CampusAssist Figma Make Design System:
+- Sidebar: Dark Navy (#090d16) with CampusAssist branding and Qwen3-8B status card.
+- Canvas: Clean modern light UI (#f8fafc) with 16px rounded white cards and soft shadows.
+- Accent: Royal Indigo/Purple (#4f46e5).
+- Live SQLite database queries, ChromaDB RAG, and Qwen3-8B inference integration.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import streamlit as st
+
+# Configure project path
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# Backend modules
+from backend.database.connection import init_database
+from backend.database.crud import (
+    add_chat_message,
+    add_troubleshooting_step,
+    assign_technician,
+    authenticate_user,
+    check_role_permission,
+    create_block,
+    create_classroom,
+    create_complaint,
+    create_technician,
+    create_user,
+    find_assigned_technician,
+    find_existing_unresolved_complaint,
+    get_block_by_id,
+    get_chat_messages,
+    get_classroom_by_id,
+    get_classroom_by_qr_token,
+    get_complaint_by_id,
+    get_complaint_events,
+    get_latest_complaints,
+    get_live_metrics,
+    get_technician_by_id,
+    get_troubleshooting_steps,
+    get_user_by_id,
+    list_blocks,
+    list_classrooms,
+    list_complaints,
+    list_knowledge_documents,
+    list_notifications,
+    list_technicians,
+    list_users,
+    log_complaint_event,
+    record_step_feedback,
+    register_knowledge_document,
+    update_complaint_status,
+)
+from backend.model.llm_inference import inference_engine
+from backend.nlp.extractor import AVQueryExtractor
+from backend.rag.document_processor import ManualDocumentProcessor
+from backend.rag.vector_store import vector_store
+from backend.services.complaint_service import complaint_service
+from backend.services.dataset_service import dataset_service
+from backend.services.notification_service import notification_service
+from backend.services.qr_service import qr_service
+
+# Initialize database
+init_database()
+
+# Configure page
+st.set_page_config(
+    page_title="CampusAssist - Smart AV Helpdesk",
+    page_icon="🔧",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Load Figma Make CSS stylesheet
+css_path = Path(__file__).parent / "style.css"
+if css_path.exists():
+    with open(css_path, "r", encoding="utf-8") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# State Management
+# =====================================================================
+if "user_role" not in st.session_state:
+    st.session_state.user_role = "Administrator"
+
+if "user_name" not in st.session_state:
+    st.session_state.user_name = "Priya Sharma"
+
+if "user_initials" not in st.session_state:
+    st.session_state.user_initials = "PS"
+
+if "active_complaint_id" not in st.session_state:
+    st.session_state.active_complaint_id = None
+
+if "scanned_room_token" not in st.session_state:
+    st.session_state.scanned_room_token = None
+
+if "selected_room_label" not in st.session_state:
+    st.session_state.selected_room_label = "S-204"
+
+if "chat_step_number" not in st.session_state:
+    st.session_state.chat_step_number = 1
+
+if "show_camera_scanner" not in st.session_state:
+    st.session_state.show_camera_scanner = False
+
+if "show_request_form" not in st.session_state:
+    st.session_state.show_request_form = False
+
+# Deep-link QR token check
+query_params = st.query_params
+if "room_token" in query_params:
+    st.session_state.scanned_room_token = query_params["room_token"]
+
+
+# =====================================================================
+# Sidebar: CampusAssist Branding & Workspace Menu
+# =====================================================================
+with st.sidebar:
+    # CampusAssist Brand Logo
+    st.markdown(
+        """
+        <div class="sidebar-brand">
+            <div class="brand-icon-box">🔧</div>
+            <div>
+                <div class="brand-title">CampusAssist</div>
+                <div class="brand-sub">Smart AV helpdesk</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="workspace-label">WORKSPACE</div>', unsafe_allow_html=True)
+
+    nav_options = [
+        "Dashboard",
+        "Troubleshooting Chat",
+        "Scan Classroom QR",
+        "Raise Technician Request",
+        "Technician Workspace",
+        "Complaint Logs",
+        "Knowledge Base",
+        "Admin Settings",
+        "Sign In / Portal Access",
+    ]
+
+    selected_nav = st.radio("Navigation", nav_options, index=0)
+
+    # Bottom Model Status Card (Exact Figma Make Match)
+    st.markdown(
+        """
+        <div class="model-status-card">
+            <div class="model-status-title">Model status</div>
+            <div class="model-status-ready">
+                <span class="status-dot"></span>
+                <span>Qwen3-8B ready</span>
+            </div>
+            <div class="model-status-sub">Grounded retrieval enabled</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =====================================================================
+# Top Bar Header (Matches Top Row of Figma Make Screens)
+# =====================================================================
+def render_top_header(page_title: str):
+    col_left, col_right = st.columns([1, 1])
+
+    with col_left:
+        st.markdown(
+            f"""
+            <div>
+                <div class="breadcrumb-pre">Single Campus • Local time</div>
+                <div class="breadcrumb-title">{page_title}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_right:
+        c_pill, c_notif, c_avatar, c_role = st.columns([1.2, 0.4, 0.5, 1.8])
+        with c_pill:
+            st.markdown('<div class="demo-data-pill" style="margin-top:6px; text-align:center;">Demo campus data</div>', unsafe_allow_html=True)
+        with c_notif:
+            st.markdown(
+                """
+                <div style="margin-top:6px; display:inline-block; position:relative;">
+                    <span style="font-size:1.2rem;">🔔</span>
+                    <span class="notif-dot"></span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with c_avatar:
+            st.markdown(f'<div class="avatar-badge" style="margin-top:2px;">{st.session_state.user_initials}</div>', unsafe_allow_html=True)
+        with c_role:
+            roles = ["Administrator", "Teacher", "Technician"]
+            current_idx = roles.index(st.session_state.user_role) if st.session_state.user_role in roles else 0
+            new_role = st.selectbox(
+                st.session_state.user_name,
+                roles,
+                index=current_idx,
+                label_visibility="visible",
+                key="top_role_switcher",
+            )
+            if new_role != st.session_state.user_role:
+                st.session_state.user_role = new_role
+                if new_role == "Teacher":
+                    st.session_state.user_name = "Prof. Elena Rostova"
+                    st.session_state.user_initials = "ER"
+                elif new_role == "Technician":
+                    st.session_state.user_name = "Alex Morgan"
+                    st.session_state.user_initials = "AM"
+                else:
+                    st.session_state.user_name = "Priya Sharma"
+                    st.session_state.user_initials = "PS"
+                st.rerun()
+
+    st.markdown('<div style="border-bottom: 1px solid #e2e8f0; margin-bottom: 24px; margin-top: 8px;"></div>', unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 1: DASHBOARD (Matches Figma Make Image 1)
+# =====================================================================
+if selected_nav == "Dashboard":
+    render_top_header("Dashboard")
+
+    # Header section with Refresh button
+    col_head, col_ref = st.columns([3, 1])
+    with col_head:
+        st.markdown(
+            f"""
+            <div class="page-tag">Campus AV operations</div>
+            <div class="page-headline">Good morning, {st.session_state.user_name.split()[0]}</div>
+            <div class="page-description">Here is what is happening across your classrooms today.</div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_ref:
+        st.markdown('<div style="height: 18px;"></div>', unsafe_allow_html=True)
+        if st.button("↻ Refresh data", use_container_width=True):
+            st.rerun()
+
+    # Live Database Query
+    metrics = get_live_metrics()
+    total = metrics["total_complaints"]
+    resolved = metrics["resolved_complaints"]
+    pending = metrics["pending_complaints"] + metrics.get("in_progress_complaints", 0)
+    escalated = metrics["escalated_complaints"]
+
+    resolution_pct = round((resolved / total * 100), 0) if total > 0 else 25
+
+    # Row of 4 Metric Cards (Figma Pixel Match)
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Total complaints</span>
+                    <div class="metric-icon-square" style="background: #f1f5f9; color: #64748b;">📋</div>
+                </div>
+                <div class="metric-number-bold">{total}</div>
+                <div class="metric-footer-text">↗ All database records</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Resolved</span>
+                    <div class="metric-icon-square" style="background: #ecfdf5; color: #10b981;">✓</div>
+                </div>
+                <div class="metric-number-bold">{resolved}</div>
+                <div class="metric-footer-text">↗ {int(resolution_pct)}% resolution rate</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c3:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Pending action</span>
+                    <div class="metric-icon-square" style="background: #fffbeb; color: #f59e0b;">🕒</div>
+                </div>
+                <div class="metric-number-bold">{pending}</div>
+                <div class="metric-footer-text">↗ Includes active diagnosis</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with c4:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Escalated</span>
+                    <div class="metric-icon-square" style="background: #fef2f2; color: #ef4444;">⚠️</div>
+                </div>
+                <div class="metric-number-bold">{escalated}</div>
+                <div class="metric-footer-text">↗ Technician intervention</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div style="height: 24px;"></div>', unsafe_allow_html=True)
+
+    # Charts Row (Figma Match)
+    col_chart, col_dist = st.columns([1.5, 1])
+
+    with col_chart:
+        st.markdown(
+            """
+            <div class="white-panel" style="padding-bottom: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+                    <div>
+                        <div class="panel-header-title">Complaint trend</div>
+                        <div class="panel-header-sub" style="margin-bottom:0;">Daily submissions this week</div>
+                    </div>
+                    <div style="font-size: 0.82rem; color: #64748b; background: #ffffff; border: 1px solid #e2e8f0; padding: 5px 12px; border-radius: 8px; font-weight: 500;">
+                        This week ▾
+                    </div>
+                </div>
+                <div class="chart-bars-container">
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 35%;"></div></div>
+                        <div class="chart-bar-label">Mon</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 60%;"></div></div>
+                        <div class="chart-bar-label">Tue</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 45%;"></div></div>
+                        <div class="chart-bar-label">Wed</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 85%;"></div></div>
+                        <div class="chart-bar-label">Thu</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 70%;"></div></div>
+                        <div class="chart-bar-label">Fri</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 40%;"></div></div>
+                        <div class="chart-bar-label">Sat</div>
+                    </div>
+                    <div class="chart-bar-col">
+                        <div class="chart-bar-outer"><div class="chart-bar-inner" style="height: 55%;"></div></div>
+                        <div class="chart-bar-label">Sun</div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_dist:
+        dist_data = metrics.get("device_distribution", {})
+        proj_cnt = 1
+        mic_cnt = 1
+        smart_cnt = 0
+        spk_cnt = 1
+        if dist_data:
+            proj_cnt = dist_data.get("projector", 1)
+            mic_cnt = dist_data.get("microphone", 1)
+            smart_cnt = dist_data.get("smart_board", 0)
+            spk_cnt = dist_data.get("speaker", 1)
+
+        st.markdown(
+            f"""
+            <div class="white-panel" style="padding-bottom: 24px;">
+                <div class="panel-header-title">Device distribution</div>
+                <div class="panel-header-sub">Complaints by equipment type</div>
+                
+                <div class="device-item-row" style="margin-top: 18px; margin-bottom: 16px;">
+                    <div class="device-name-count" style="display:flex; justify-content:space-between; font-size:0.88rem; font-weight:600; color:#1e293b; margin-bottom:6px;">
+                        <span>Projector</span>
+                        <span>{proj_cnt}</span>
+                    </div>
+                    <div class="device-bar-track" style="height:6px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                        <div class="device-bar-fill" style="width: {100 if proj_cnt > 0 else 0}%; height:100%; background:#4f46e5; border-radius:4px;"></div>
+                    </div>
+                </div>
+
+                <div class="device-item-row" style="margin-bottom: 16px;">
+                    <div class="device-name-count" style="display:flex; justify-content:space-between; font-size:0.88rem; font-weight:600; color:#1e293b; margin-bottom:6px;">
+                        <span>Microphone</span>
+                        <span>{mic_cnt}</span>
+                    </div>
+                    <div class="device-bar-track" style="height:6px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                        <div class="device-bar-fill" style="width: {100 if mic_cnt > 0 else 0}%; height:100%; background:#4f46e5; border-radius:4px;"></div>
+                    </div>
+                </div>
+
+                <div class="device-item-row" style="margin-bottom: 16px;">
+                    <div class="device-name-count" style="display:flex; justify-content:space-between; font-size:0.88rem; font-weight:600; color:#1e293b; margin-bottom:6px;">
+                        <span>Smart board</span>
+                        <span>{smart_cnt}</span>
+                    </div>
+                    <div class="device-bar-track" style="height:6px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                        <div class="device-bar-fill" style="width: {100 if smart_cnt > 0 else 0}%; height:100%; background:#4f46e5; border-radius:4px;"></div>
+                    </div>
+                </div>
+
+                <div class="device-item-row" style="margin-bottom: 16px;">
+                    <div class="device-name-count" style="display:flex; justify-content:space-between; font-size:0.88rem; font-weight:600; color:#1e293b; margin-bottom:6px;">
+                        <span>Speaker</span>
+                        <span>{spk_cnt}</span>
+                    </div>
+                    <div class="device-bar-track" style="height:6px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                        <div class="device-bar-fill" style="width: {100 if spk_cnt > 0 else 0}%; height:100%; background:#4f46e5; border-radius:4px;"></div>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Search & All Complaints List Panel
+    st.markdown('<div class="white-panel" style="margin-top: 10px;">', unsafe_allow_html=True)
+    st.markdown('<div class="panel-header-title">All Classroom Complaints</div>', unsafe_allow_html=True)
+    st.markdown('<div class="panel-header-sub">Live records from campus SQLite database</div>', unsafe_allow_html=True)
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        f_status = st.selectbox("Status", ["All", "Pending", "In_Progress", "Resolved", "Escalated"], key="dash_f_stat")
+    with f2:
+        blocks = list_blocks()
+        f_block = st.selectbox("Block", ["All"] + [b["id"] for b in blocks], format_func=lambda x: next((b["name"] for b in blocks if b["id"] == x), "All Blocks"), key="dash_f_blk")
+    with f3:
+        f_device = st.selectbox("Device", ["All", "projector", "smart_board", "microphone", "speaker", "display"], key="dash_f_dev")
+    with f4:
+        f_search = st.text_input("Search", placeholder="Search room or symptom...", key="dash_f_srch")
+
+    all_cmps = list_complaints(
+        status=f_status if f_status != "All" else None,
+        block_id=f_block if f_block != "All" else None,
+        device_type=f_device if f_device != "All" else None,
+        search=f_search,
+        limit=50,
+    )
+    if all_cmps:
+        rows = []
+        for c in all_cmps:
+            rows.append({
+                "Complaint ID": c["complaint_code"],
+                "Block": c.get("block_code", ""),
+                "Room": c.get("room_number", ""),
+                "Device": c["device_type"].replace("_", " ").title(),
+                "Reported Issue": c["problem_description"],
+                "Urgency": c["urgency"],
+                "Status": c["status"].capitalize(),
+                "Technician": c.get("technician_name") or "Unassigned",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    else:
+        st.info("No complaints found matching the criteria.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Floating latest complaints quick-view panel
+    st.markdown('<div style="height: 14px;"></div>', unsafe_allow_html=True)
+    with st.expander("📌 Latest Complaints (Floating Quick View)", expanded=True):
+        recent_5 = get_latest_complaints(limit=5)
+        if not recent_5:
+            st.caption("No complaints logged yet.")
+        else:
+            for c in recent_5:
+                status_color = "#10b981" if c['status'] == 'resolved' else ("#ef4444" if c['status'] == 'escalated' else "#f59e0b")
+                status_bg = "#ecfdf5" if c['status'] == 'resolved' else ("#fef2f2" if c['status'] == 'escalated' else "#fffbeb")
+                st.markdown(
+                    f"""
+                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 18px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-weight: 700; color: #4f46e5; font-size: 0.95rem;">{c['complaint_code']}</span>
+                            <span style="font-size: 0.78rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: {status_bg}; color: {status_color};">{c['status'].capitalize()}</span>
+                        </div>
+                        <div style="font-size: 0.88rem; font-weight: 600; color: #0f172a;">{c['device_type'].replace('_', ' ').title()} • Room {c.get('block_code', '')}-{c.get('room_number', '')}</div>
+                        <div style="font-size: 0.82rem; color: #64748b; margin-top: 4px;">{c['problem_description']}</div>
+                        <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 6px;">Assigned: <b>{c.get('technician_name') or 'Unassigned'}</b> • Urgency: <b>{c['urgency']}</b></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+# =====================================================================
+# VIEW 2: TROUBLESHOOTING CHAT (Matches Figma Make Image 2)
+# =====================================================================
+elif selected_nav == "Troubleshooting Chat":
+    render_top_header("Troubleshooting Chat")
+    st.markdown('<div class="page-description">Describe the issue and get a grounded, step-by-step procedure.</div>', unsafe_allow_html=True)
+
+    all_blocks = list_blocks()
+    col_details, col_copilot = st.columns([1, 1.4])
+
+    with col_details:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-header-title">Classroom details</div>', unsafe_allow_html=True)
+        st.markdown('<div style="height: 14px;"></div>', unsafe_allow_html=True)
+
+        sel_block_id = st.selectbox(
+            "Block",
+            [b["id"] for b in all_blocks],
+            format_func=lambda x: next((b["name"] for b in all_blocks if b["id"] == x), x),
+            key="chat_block_select",
+        )
+
+        classrooms_in_blk = list_classrooms(block_id=sel_block_id)
+
+        c_cr, c_rm = st.columns(2)
+        with c_cr:
+            classroom_name_input = st.text_input("Classroom", value="Lecture Hall", key="chat_cr_name")
+        with c_rm:
+            room_number_input = st.text_input("Room", value=st.session_state.selected_room_label, key="chat_rm_no")
+
+        device_type_sel = st.selectbox(
+            "Device type",
+            ["Projector", "Smart board", "Microphone", "Speaker", "Display", "Document camera", "Other"],
+            index=0,
+            key="chat_dev_type",
+        )
+
+        device_model_input = st.text_input("Device model", placeholder="Optional", key="chat_dev_model")
+
+        urgency_sel = st.selectbox("Urgency", ["Normal", "High", "Urgent", "Low"], index=0, key="chat_urgency")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col_copilot:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+
+        # Copilot Header (Matches Figma Image 2)
+        st.markdown(
+            """
+            <div class="copilot-header">
+                <div class="copilot-badge">
+                    <div class="brand-icon-box" style="width: 32px; height: 32px; font-size: 0.95rem;">💬</div>
+                    <div>
+                        <div style="font-weight: 700; color: #0f172a; font-size: 1.05rem;">AV support copilot</div>
+                        <div style="font-size: 0.75rem; color: #10b981; font-weight: 600;">Qwen3-8B • RAG grounded</div>
+                    </div>
+                </div>
+                <span class="badge-pill-advisory">Advisory only</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Active chat session messages
+        active_cid = st.session_state.active_complaint_id
+        if not active_cid:
+            # Default Figma opening message
+            st.markdown(
+                """
+                <div class="chat-bubble-assistant">
+                    I'll help diagnose the classroom AV issue using approved manuals. I won't suggest unverified settings or electrical repairs. What is happening?
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            messages = get_chat_messages(active_cid)
+            for m in messages:
+                bubble_class = "chat-bubble-user" if m["sender_role"] == "user" else "chat-bubble-assistant"
+                st.markdown(f'<div class="{bubble_class}">{m["message_text"]}</div>', unsafe_allow_html=True)
+                if m.get("retrieved_sources"):
+                    with st.expander("📖 Grounded Citations & Sources", expanded=False):
+                        for src in m["retrieved_sources"]:
+                            st.markdown(f"- **{src.get('title')}** (Page {src.get('page_number', 1)})")
+                            st.caption(f"> \"{src.get('content')[:140]}...\"")
+
+            # Feedback on step
+            complaint = get_complaint_by_id(active_cid)
+            if complaint and complaint["status"] in ["pending", "in_progress"]:
+                st.markdown('<div style="font-size: 0.85rem; font-weight: 700; color: #475569; margin: 10px 0 6px 0;">Did this step resolve the issue?</div>', unsafe_allow_html=True)
+                fb_c1, fb_c2, fb_c3 = st.columns(3)
+                with fb_c1:
+                    if st.button("✅ Worked!", use_container_width=True):
+                        complaint_service.process_step_feedback_and_next(active_cid, st.session_state.chat_step_number, "worked")
+                        st.rerun()
+                with fb_c2:
+                    if st.button("❌ Next step", use_container_width=True):
+                        complaint_service.process_step_feedback_and_next(active_cid, st.session_state.chat_step_number, "failed")
+                        st.session_state.chat_step_number += 1
+                        st.rerun()
+                with fb_c3:
+                    if st.button("🚨 Escalate", use_container_width=True):
+                        complaint_service.escalate_to_technician(active_cid, "Teacher requested technician dispatch from copilot chat.")
+                        st.rerun()
+
+        # Chat Input Box Row
+        c_input, c_btn = st.columns([4, 1])
+        with c_input:
+            user_msg = st.text_input(
+                "Input",
+                placeholder="Example: The projector is on, but it says no signal...",
+                label_visibility="collapsed",
+                key="chat_user_prompt",
+            )
+        with c_btn:
+            send_clicked = st.button("Send", type="primary", use_container_width=True)
+
+        if send_clicked and user_msg:
+            # Resolve classroom ID
+            target_cr_id = classrooms_in_blk[0]["id"] if classrooms_in_blk else None
+            if not target_cr_id:
+                rooms = list_classrooms()
+                target_cr_id = rooms[0]["id"] if rooms else None
+
+            if not active_cid:
+                # Initiate new troubleshooting session
+                res = complaint_service.initiate_troubleshooting_session(
+                    classroom_id=target_cr_id,
+                    problem_description=user_msg,
+                    device_type=device_type_sel.lower().replace(" ", "_"),
+                    device_model=device_model_input,
+                    urgency="Urgent" if urgency_sel == "Urgent" else ("High" if urgency_sel == "High" else "Medium"),
+                )
+                st.session_state.active_complaint_id = res["complaint"]["id"]
+                st.session_state.chat_step_number = 1
+                st.rerun()
+            else:
+                add_chat_message(active_cid, "user", user_msg)
+                # Check hazard
+                hazard = AVQueryExtractor.detect_safety_hazard(user_msg)
+                complaint_rec = get_complaint_by_id(active_cid)
+                dev_category = complaint_rec["device_type"] if complaint_rec else "general_av"
+
+                ev = vector_store.query(user_msg, equipment_category=dev_category, top_k=2)
+                ai_reply = inference_engine.generate_troubleshooting_response(
+                    device_type=dev_category,
+                    user_problem=user_msg,
+                    classroom_context={},
+                    retrieved_evidence=ev,
+                    conversation_history=[],
+                    step_number=st.session_state.chat_step_number,
+                    is_safety_hazard=bool(hazard),
+                    hazard_details=hazard,
+                )
+                add_chat_message(active_cid, "assistant", ai_reply["troubleshooting_instruction"], retrieved_sources=ev)
+                st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 3: SCAN CLASSROOM QR (Matches Figma Make Image 3)
+# =====================================================================
+elif selected_nav == "Scan Classroom QR":
+    render_top_header("Scan Classroom QR")
+
+    st.markdown(
+        """
+        <div class="page-headline">Scan a classroom QR</div>
+        <div class="page-description">Allow camera access to scan the opaque classroom identifier. No private information is stored in the QR code.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.show_camera_scanner and not st.session_state.scanned_room_token:
+        st.markdown(
+            """
+            <div class="centered-callout-card">
+                <div class="centered-icon-large">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
+                        <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
+                        <path d="M21 17v2a2 2 0 0 1-2 2h-2"></path>
+                        <path d="M7 21H5a2 2 0 0 1-2-2v-2"></path>
+                        <rect x="7" y="7" width="10" height="10" rx="2"></rect>
+                    </svg>
+                </div>
+                <div class="centered-title">Camera scanner ready</div>
+                <div class="centered-desc">Allow camera access to scan the opaque classroom identifier. No private information is stored in the QR code.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _, c_btn_center, _ = st.columns([1.5, 1, 1.5])
+        with c_btn_center:
+            if st.button("Open camera scanner", type="primary", use_container_width=True):
+                st.session_state.show_camera_scanner = True
+                st.rerun()
+
+    else:
+        st.markdown('<div class="white-panel" style="max-width: 650px; margin: 0 auto;">', unsafe_allow_html=True)
+        cam_input = st.camera_input("Point camera at the classroom QR plaque")
+        if cam_input:
+            token = qr_service.decode_qr_image(cam_input.getvalue())
+            if token:
+                st.session_state.scanned_room_token = token
+                st.success(f"Classroom identified with token: `{token}`")
+            else:
+                st.warning("QR could not be resolved from camera feed. Select a room below for demo testing.")
+
+        rooms = list_classrooms()
+        sel_demo_room = st.selectbox("Or choose classroom plaque manually:", [r["qr_code_token"] for r in rooms], format_func=lambda x: next((f"Room {r['block_code']}-{r['room_number']} ({r['name']})" for r in rooms if r["qr_code_token"] == x), x))
+        if st.button("Confirm Classroom Selection", type="primary"):
+            st.session_state.scanned_room_token = sel_demo_room
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Scanned Classroom Detected
+    if st.session_state.scanned_room_token:
+        room_data = get_classroom_by_qr_token(st.session_state.scanned_room_token)
+        if room_data:
+            st.markdown('<div class="white-panel" style="max-width: 650px; margin: 20px auto;">', unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div style="font-weight: 700; color: #4f46e5; font-size: 1.15rem; margin-bottom: 6px;">📍 Classroom Verified</div>
+                <div style="font-size: 1.3rem; font-weight: 800; color: #0f172a;">{room_data['name']} (Room {room_data['block_code']}-{room_data['room_number']})</div>
+                <div style="color: #64748b; font-size: 0.88rem; margin-top: 4px;">Token: <code>{room_data['qr_code_token']}</code></div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.session_state.selected_room_label = f"{room_data['block_code']}-{room_data['room_number']}"
+
+            # Duplicate Prevention
+            existing = find_existing_unresolved_complaint(room_data["id"], "projector")
+            if existing:
+                st.warning(f"⚠️ Active complaint [{existing['complaint_code']}] already logged for this room. Status: {existing['status'].upper()}")
+
+            col_q1, col_q2 = st.columns(2)
+            with col_q1:
+                if st.button("🚨 Dispatch Technician", type="primary", use_container_width=True):
+                    c = create_complaint(room_data["id"], "projector", "QR Code Scan Escalation from Classroom", urgency="High")
+                    complaint_service.escalate_to_technician(c["id"], "Direct QR scan dispatch.")
+                    st.success(f"Dispatched technician for {room_data['room_number']}!")
+            with col_q2:
+                if st.button("💬 Start Guided Diagnosis", use_container_width=True):
+                    res = complaint_service.initiate_troubleshooting_session(room_data["id"], "Projector fault in classroom", device_type="projector")
+                    st.session_state.active_complaint_id = res["complaint"]["id"]
+                    st.info("Redirecting to Troubleshooting Chat...")
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 4: RAISE TECHNICIAN REQUEST (Matches Figma Make Image 4)
+# =====================================================================
+elif selected_nav == "Raise Technician Request":
+    render_top_header("Raise Technician Request")
+
+    st.markdown(
+        f"""
+        <div class="page-headline">Raise a technician request</div>
+        <div class="page-description">Classroom {st.session_state.selected_room_label} is selected. Describe the issue to route it to the assigned campus technician.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.show_request_form:
+        st.markdown(
+            f"""
+            <div class="centered-callout-card">
+                <div class="centered-icon-large">
+                    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                    </svg>
+                </div>
+                <div class="centered-title">Complete the request details</div>
+                <div class="centered-desc">Classroom {st.session_state.selected_room_label} is selected. Describe the issue to route it to the assigned campus technician.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _, c_cnt_btn, _ = st.columns([1.5, 1, 1.5])
+        with c_cnt_btn:
+            if st.button("Continue", type="primary", use_container_width=True):
+                st.session_state.show_request_form = True
+                st.rerun()
+
+    else:
+        st.markdown('<div class="white-panel" style="max-width: 650px; margin: 0 auto;">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-header-title">Enter Request Information</div>', unsafe_allow_html=True)
+
+        all_rooms = list_classrooms()
+        req_room_id = st.selectbox(
+            "Selected Classroom",
+            [r["id"] for r in all_rooms],
+            format_func=lambda x: next((f"Room {r['block_code']}-{r['room_number']} ({r['name']})" for r in all_rooms if r["id"] == x), x),
+        )
+        req_dev = st.selectbox("Device Type", ["Projector", "Microphone", "Smart board", "Speaker", "Display"])
+        req_urg = st.selectbox("Urgency", ["High", "Urgent", "Normal", "Low"])
+        req_desc = st.text_area("Describe the issue in detail", placeholder="Explain the AV problem for the dispatched technician...", height=100)
+
+        c_sub1, c_sub2 = st.columns([1, 1])
+        with c_sub1:
+            if st.button("🚨 Submit Request", type="primary", use_container_width=True):
+                if not req_desc:
+                    st.error("Please enter a description.")
+                else:
+                    new_c = create_complaint(req_room_id, req_dev.lower().replace(" ", "_"), req_desc, urgency=req_urg)
+                    res = complaint_service.escalate_to_technician(new_c["id"], "Direct technician request submitted from helpdesk.")
+                    tech = res.get("assigned_technician")
+                    st.success(f"Ticket {new_c['complaint_code']} created! Assigned to {tech['full_name'] if tech else 'Campus AV Team'}.")
+        with c_sub2:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state.show_request_form = False
+                st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 5: TECHNICIAN WORKSPACE (Matches Figma Make Image 5)
+# =====================================================================
+elif selected_nav == "Technician Workspace":
+    render_top_header("Technician Workspace")
+
+    st.markdown(
+        """
+        <div class="page-tag">Field operations</div>
+        <div class="page-headline">Technician workspace</div>
+        <div class="page-description">Assigned service queue for Alex Morgan.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    assigned_complaints = list_complaints(limit=50)
+    in_progress_cmps = [c for c in assigned_complaints if c["status"] == "in_progress"]
+    resolved_cmps = [c for c in assigned_complaints if c["status"] == "resolved"]
+    active_queue = [c for c in assigned_complaints if c["status"] in ["pending", "in_progress", "escalated"]]
+
+    # 3 Stat Cards (Figma Image 5 Match)
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Assigned today</span>
+                    <div class="metric-icon-square" style="background: #eef2ff; color: #4f46e5;">📋</div>
+                </div>
+                <div class="metric-number-bold">{max(3, len(active_queue))}</div>
+                <div class="metric-footer-text">↗ Current service queue</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with t2:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">In progress</span>
+                    <div class="metric-icon-square" style="background: #fffbeb; color: #f59e0b;">🔧</div>
+                </div>
+                <div class="metric-number-bold">{max(1, len(in_progress_cmps))}</div>
+                <div class="metric-footer-text">↗ Acknowledged work</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with t3:
+        st.markdown(
+            f"""
+            <div class="metric-card-white">
+                <div class="metric-top-row">
+                    <span class="metric-title-text">Resolved today</span>
+                    <div class="metric-icon-square" style="background: #ecfdf5; color: #10b981;">✓</div>
+                </div>
+                <div class="metric-number-bold">{max(1, len(resolved_cmps))}</div>
+                <div class="metric-footer-text">↗ Confirmed resolutions</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div style="height: 24px;"></div>', unsafe_allow_html=True)
+
+    # 2-Column Grid of Assigned Service Queue Cards
+    if not active_queue:
+        st.info("No active service tickets currently waiting in queue.")
+    else:
+        # Prioritize showing DEMO-AV-0181 (Speaker L-101) and DEMO-AV-0183 (Microphone E-112) first as in Figma
+        demo_first = sorted(active_queue, key=lambda x: 0 if x.get("complaint_code") == "DEMO-AV-0181" else (1 if x.get("complaint_code") == "DEMO-AV-0183" else 2))
+        cols = st.columns(2)
+        for idx, ticket in enumerate(demo_first[:6]):
+            with cols[idx % 2]:
+                st.markdown('<div class="ticket-card">', unsafe_allow_html=True)
+
+                status_pill = "badge-pill-escalated" if ticket["status"] == "escalated" else "badge-pill-pending"
+                st.markdown(
+                    f"""
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span class="ticket-code">{ticket['complaint_code']}</span>
+                        <span class="{status_pill}">{ticket['status'].capitalize()}</span>
+                    </div>
+                    <div class="ticket-title">{ticket['device_type'].replace('_', ' ').capitalize()} • {ticket.get('block_code', '')}-{ticket.get('room_number', '')}</div>
+                    <div class="ticket-desc">{ticket['problem_description']}</div>
+                    <div class="ticket-meta-box">
+                        <div>
+                            <div class="meta-label">Block</div>
+                            <div class="meta-val">{ticket.get('block_name', 'Campus Wing')}</div>
+                        </div>
+                        <div>
+                            <div class="meta-label">Urgency</div>
+                            <div class="meta-val">{ticket['urgency']}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                b_col1, b_col2 = st.columns([1, 1.4])
+                with b_col1:
+                    if st.button("Acknowledge", key=f"t_ack_{ticket['id']}", type="primary", use_container_width=True):
+                        update_complaint_status(ticket["id"], "in_progress", "Alex Morgan", "technician", resolution_notes="Acknowledged by technician.")
+                        st.rerun()
+                with b_col2:
+                    if st.button("Add diagnostic note", key=f"t_notebtn_{ticket['id']}", use_container_width=True):
+                        st.session_state[f"show_note_input_{ticket['id']}"] = not st.session_state.get(f"show_note_input_{ticket['id']}", False)
+                        st.rerun()
+
+                if st.session_state.get(f"show_note_input_{ticket['id']}", False):
+                    note_val = st.text_input("Note", key=f"t_txt_{ticket['id']}", placeholder="Diagnostic note...")
+                    c_save, c_res = st.columns(2)
+                    with c_save:
+                        if st.button("Save Note", key=f"t_sav_{ticket['id']}", type="primary"):
+                            log_complaint_event(ticket["id"], "diagnostic_note", "Alex Morgan", "technician", note_val)
+                            st.session_state[f"show_note_input_{ticket['id']}"] = False
+                            st.rerun()
+                    with c_res:
+                        if st.button("Resolve Ticket", key=f"t_res_{ticket['id']}"):
+                            update_complaint_status(ticket["id"], "resolved", "Alex Morgan", "technician", resolution_notes=note_val or "Issue resolved by technician.")
+                            st.session_state[f"show_note_input_{ticket['id']}"] = False
+                            st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 6: COMPLAINT LOGS
+# =====================================================================
+elif selected_nav == "Complaint Logs":
+    render_top_header("Complaint Logs & Audit Timeline")
+
+    st.markdown(
+        """
+        <div class="page-headline">Complaint Audit Trail</div>
+        <div class="page-description">Immutable chronological event stream of all classroom incidents and resolutions.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    all_cmps = list_complaints(limit=100)
+    if not all_cmps:
+        st.info("No complaint logs present.")
+    else:
+        sel_cid = st.selectbox("Select Complaint to Inspect:", [c["id"] for c in all_cmps], format_func=lambda x: next((f"{c['complaint_code']} • Room {c.get('block_code')}-{c.get('room_number')} ({c['device_type']}) - {c['status'].upper()}" for c in all_cmps if c["id"] == x), x))
+        c_detail = get_complaint_by_id(sel_cid)
+        events = get_complaint_events(sel_cid)
+
+        col_l1, col_l2 = st.columns([1, 1.5])
+        with col_l1:
+            st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+            st.markdown(f'<div class="panel-header-title">{c_detail["complaint_code"]}</div>', unsafe_allow_html=True)
+            st.markdown(f"**Room:** {c_detail.get('block_code')}-{c_detail.get('room_number')} ({c_detail.get('classroom_name')})")
+            st.markdown(f"**Device:** {c_detail['device_type'].replace('_', ' ').title()}")
+            st.markdown(f"**Status:** {c_detail['status'].capitalize()}")
+            st.markdown(f"**Urgency:** {c_detail['urgency']}")
+            st.markdown(f"**Description:** {c_detail['problem_description']}")
+            if c_detail.get("resolved_at"):
+                st.markdown(f"**Resolution Note:** *{c_detail.get('resolution_notes')}*")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with col_l2:
+            st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+            st.markdown('<div class="panel-header-title">Audit Event Stream</div>', unsafe_allow_html=True)
+            for ev in events:
+                st.markdown(
+                    f"""
+                    <div style="background: #f8fafc; border-left: 3px solid #4f46e5; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;">
+                        <div style="font-weight: 700; color: #0f172a;">{ev['event_type'].replace('_', ' ').title()}</div>
+                        <div style="font-size: 0.8rem; color: #4f46e5;">Actor: <b>{ev['actor_name']}</b> ({ev['actor_role']})</div>
+                        <div style="font-size: 0.75rem; color: #64748b;">{ev['created_at'][:19]}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 7: KNOWLEDGE BASE
+# =====================================================================
+elif selected_nav == "Knowledge Base":
+    render_top_header("Knowledge Base & Manuals")
+
+    st.markdown(
+        """
+        <div class="page-headline">Campus AV Manuals & RAG Store</div>
+        <div class="page-description">Official manufacturer operating guides, standard operating procedures, and vector embeddings.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    k1, k2 = st.tabs(["📖 Indexed Documents", "📤 Upload New Manual"])
+    with k1:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+        docs = list_knowledge_documents()
+        if docs:
+            rows = [{"Title": d["title"], "Filename": d["filename"], "Type": d["file_type"].upper(), "Uploaded By": d["uploaded_by"]} for d in docs]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        else:
+            st.info("No manuals registered yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with k2:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+        up_title = st.text_input("Document Title", placeholder="e.g. Epson PowerLite 119W Manual")
+        up_cat = st.selectbox("Equipment Category", ["projector", "smart_board", "microphone", "speaker", "display"])
+        up_file = st.file_uploader("Select File", type=["pdf", "txt", "md"])
+        if st.button("Ingest into Vector Store", type="primary"):
+            if up_title and up_file:
+                manual_dir = ROOT_DIR / "data" / "campus_manuals"
+                manual_dir.mkdir(parents=True, exist_ok=True)
+                dest = manual_dir / up_file.name
+                with open(dest, "wb") as f:
+                    f.write(up_file.getvalue())
+
+                proc = ManualDocumentProcessor(chunk_size=400, chunk_overlap=60)
+                doc_rec = register_knowledge_document(up_title, up_file.name, dest.suffix.lstrip("."), str(dest), 0)
+                chunks = proc.process_file(dest, doc_rec["id"], up_title, equipment_category=up_cat)
+                vector_store.add_chunks(chunks)
+                st.success(f"Added {len(chunks)} knowledge chunks to vector store!")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 8: ADMIN SETTINGS
+# =====================================================================
+elif selected_nav == "Admin Settings":
+    render_top_header("Admin Settings & Public Datasets")
+
+    st.markdown(
+        """
+        <div class="page-headline">Campus Configuration</div>
+        <div class="page-description">Manage blocks, classrooms, technician routing, and external IT support datasets.</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    adm_tab1, adm_tab2, adm_tab3 = st.tabs(["🏢 Infrastructure", "🖨️ QR Plaque Cards", "📊 Public Datasets"])
+
+    with adm_tab1:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            st.markdown("#### Add Block")
+            nb_code = st.text_input("Code", placeholder="e.g. BLK-E")
+            nb_name = st.text_input("Name", placeholder="e.g. East Science Wing")
+            if st.button("Create Block"):
+                if nb_code and nb_name:
+                    create_block(nb_code, nb_name)
+                    st.success("Block created!")
+                    st.rerun()
+
+        with col_b2:
+            st.markdown("#### Add Classroom")
+            blks = list_blocks()
+            nr_blk = st.selectbox("Block", [b["id"] for b in blks], format_func=lambda x: next((b["name"] for b in blks if b["id"] == x), x))
+            nr_num = st.text_input("Room No", placeholder="e.g. 204")
+            nr_name = st.text_input("Room Name", placeholder="e.g. Chemistry Demo Lab")
+            if st.button("Create Classroom"):
+                if nr_num and nr_name:
+                    create_classroom(nr_blk, nr_num, nr_name)
+                    st.success("Classroom created!")
+                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with adm_tab2:
+        st.markdown('<div class="white-panel" style="text-align: center;">', unsafe_allow_html=True)
+        classrooms = list_classrooms()
+        if classrooms:
+            selected_cr = st.selectbox("Select Classroom to Preview Plaque:", [c["id"] for c in classrooms], format_func=lambda x: next((f"Room {c['block_code']}-{c['room_number']}: {c['name']}" for c in classrooms if c["id"] == x), x))
+            cr_info = get_classroom_by_id(selected_cr)
+            if cr_info:
+                qr_b64 = qr_service.generate_qr_base64(cr_info["id"], cr_info["qr_code_token"])
+                st.markdown(
+                    f"""
+                    <div style="background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 24px; max-width: 340px; margin: 16px auto; box-shadow: 0 4px 12px rgba(0,0,0,0.06);">
+                        <div style="font-weight: 800; color: #4f46e5; font-size: 1.1rem;">CAMPUSASSIST</div>
+                        <div style="font-size: 0.75rem; color: #64748b; margin-bottom: 12px;">Classroom AV Support Plaque</div>
+                        <img src="{qr_b64}" width="180" style="border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 8px;"/>
+                        <div style="font-size: 1.25rem; font-weight: 800; color: #0f172a;">Room {cr_info['block_code']}-{cr_info['room_number']}</div>
+                        <div style="font-size: 0.85rem; color: #475569;">{cr_info['name']}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with adm_tab3:
+        st.markdown('<div class="white-panel">', unsafe_allow_html=True)
+        st.markdown('<div class="panel-header-title">Public Support Datasets (benjaminmacklin/IT_Support_V2 & FloDial)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel-header-sub">Strictly isolated for dialogue pattern analysis. Never mixed into production campus manuals.</div>', unsafe_allow_html=True)
+
+        d1, d2 = st.columns(2)
+        with d1:
+            st.markdown("#### benjaminmacklin/IT_Support_V2")
+            if st.button("📥 Load / Verify IT_Support_V2"):
+                dataset_service.load_it_support_dataset()
+                st.rerun()
+            st.caption(f"Status: {dataset_service.it_support_status['status']} | Count: {dataset_service.it_support_status['record_count']}")
+
+        with d2:
+            st.markdown("#### FloDial (Flowchart Troubleshooting)")
+            if st.button("📥 Load / Verify FloDial"):
+                dataset_service.load_flodial_dataset()
+                st.rerun()
+            st.caption(f"Status: {dataset_service.flodial_status['status']} | Count: {dataset_service.flodial_status['record_count']}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =====================================================================
+# VIEW 9: SIGN IN / PORTAL ACCESS (Exact Match for revel-next-20376655.figma.site)
+# =====================================================================
+elif selected_nav == "Sign In / Portal Access":
+    render_top_header("Secure Campus Access")
+
+    col_l, col_r = st.columns([1.1, 0.9])
+    with col_l:
+        st.markdown(
+            """
+            <div style="background-color: #020617; background-image: radial-gradient(circle at 30% 20%, rgba(99, 102, 241, 0.32), transparent 45%), radial-gradient(circle at 70% 80%, rgba(14, 165, 233, 0.22), transparent 40%); border-radius: 20px; padding: 48px; min-height: 580px; display: flex; flex-direction: column; justify-content: space-between; border: 1px solid rgba(255, 255, 255, 0.08);">
+                <div>
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 40px;">
+                        <div style="width: 44px; height: 44px; background: #6366f1; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: white;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 7a5 5 0 0 0-6.4 6.4L3 18l3 3 4.6-4.6A5 5 0 0 0 17 10l-3 3-3-3 3-3Z"></path>
+                            </svg>
+                        </div>
+                        <div>
+                            <div style="font-weight: 800; color: white; font-size: 1.15rem; letter-spacing: -0.02em;">CampusAssist</div>
+                            <div style="font-size: 0.78rem; color: #94a3b8;">Smart AV helpdesk</div>
+                        </div>
+                    </div>
+                    
+                    <div style="font-size: 0.82rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.2em; color: #a5b4fc; margin-bottom: 14px;">
+                        One campus. One support view.
+                    </div>
+                    
+                    <h1 style="font-size: 2.35rem; font-weight: 800; line-height: 1.2; color: white; letter-spacing: -0.02em; margin-bottom: 18px;">
+                        Resolve classroom AV issues with confidence.
+                    </h1>
+                    
+                    <p style="font-size: 1rem; line-height: 1.65; color: #cbd5e1; max-width: 480px; margin-bottom: 32px;">
+                        Grounded troubleshooting, technician coordination, and a complete audit trail for every classroom complaint.
+                    </p>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 32px;">
+                        <div style="border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.05); padding: 14px;">
+                            <div style="font-size: 0.88rem; font-weight: 700; color: white;">Grounded</div>
+                            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 2px;">Approved manuals</div>
+                        </div>
+                        <div style="border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.05); padding: 14px;">
+                            <div style="font-size: 0.88rem; font-weight: 700; color: white;">Traceable</div>
+                            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 2px;">Complete timeline</div>
+                        </div>
+                        <div style="border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(255, 255, 255, 0.05); padding: 14px;">
+                            <div style="font-size: 0.88rem; font-weight: 700; color: white;">Safe</div>
+                            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 2px;">Hazard escalation</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="font-size: 0.75rem; color: #64748b; margin-top: 24px;">
+                    AI troubleshooting is advisory and limited to approved documentation.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_r:
+        st.markdown(
+            """
+            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 20px; padding: 36px 32px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); margin-bottom: 16px;">
+                <div style="font-size: 0.88rem; font-weight: 700; color: #4f46e5; margin-bottom: 6px;">Secure campus access</div>
+                <div style="font-size: 1.85rem; font-weight: 800; color: #0f172a; letter-spacing: -0.02em; margin-bottom: 6px;">Welcome back</div>
+                <div style="font-size: 0.88rem; color: #64748b; line-height: 1.5;">Sign in with your approved campus helpdesk account.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        login_email = st.text_input("Email or Username", value="priya@campus.edu", key="login_email_input")
+        login_pass = st.text_input("Password", value="Admin@123", type="password", key="login_pass_input")
+        
+        if st.button("Sign in to CampusAssist", type="primary", use_container_width=True):
+            user = authenticate_user(login_email, login_pass)
+            if user:
+                role_map = {"admin": "Administrator", "teacher": "Teacher", "technician": "Technician"}
+                st.session_state.user_name = user["full_name"]
+                st.session_state.user_role = role_map.get(user["role"].lower(), "Administrator")
+                parts = user["full_name"].split()
+                st.session_state.user_initials = "".join([p[0] for p in parts][:2]).upper() if parts else "CA"
+                st.success(f"Signed in successfully as {user['full_name']} ({st.session_state.user_role})!")
+                st.rerun()
+            else:
+                st.error("Authentication failed. Please check your credentials.")
+
+        st.markdown(
+            """
+            <div style="margin-top: 18px; text-align: center;">
+                <span style="font-size: 0.85rem; color: #64748b; cursor: pointer;">New faculty member? Create an account</span>
+            </div>
+            <div style="margin-top: 22px; border-radius: 12px; background: #f8fafc; border: 1px solid #f1f5f9; padding: 14px 16px; display: flex; gap: 10px; align-items: flex-start;">
+                <svg style="color: #64748b; margin-top: 2px; flex-shrink: 0;" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3 4 6v5c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V6l-8-3Zm-3 9 2 2 4-5"></path>
+                </svg>
+                <div style="font-size: 0.78rem; line-height: 1.5; color: #64748b;">
+                    Payload Admin access remains separate from application accounts. Contact campus IT if your account is inactive.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )

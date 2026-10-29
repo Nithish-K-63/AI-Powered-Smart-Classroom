@@ -1,0 +1,18 @@
+Campus AV Department - Standard Operating Procedure: Classroom Projectors (SOP-PRJ-01)
+Page 1: Power & Startup Instructions
+1. Ensure the wall power switch labeled 'AV Mains' is in the ON position with an amber LED.
+2. Press the blue 'POWER' button on the classroom podium control panel or the remote once.
+3. Observe the Status Indicator: A solid blue LED confirms standard operation. A flashing orange LED indicates lamp cool-down or warming cycle; wait 60 seconds before pressing power again.
+4. If no display is projected after 90 seconds, verify the HDMI cable connection between the podium patch panel and the projector input port.
+
+Page 2: Signal & Input Source Selection
+1. On the podium switcher, select 'HDMI 1 (Laptop)' or press 'Source Search' on the remote.
+2. On Windows laptops, press [Windows Key] + [P] and select 'Duplicate' to output 1080p video.
+3. If the projector shows 'No Signal Detected', inspect the HDMI cable pins for bends, disconnect and firmly reseat both ends.
+4. If image remains blank, cycle the projector input to 'HDMI 2' and back to 'HDMI 1' to refresh the handshake.
+
+Page 3: Blurry Image, Aspect Ratio & Color Distortion
+1. Use the manual Focus Ring located above the projector lens to adjust text sharpness.
+2. Press the 'Aspect' button on the remote and ensure it is configured to '16:9 widescreen'.
+3. For keystone distortion, enter Menu -> Geometry Correction -> Auto Keystone to square the image.
+4. If projector shuts off automatically after 5 minutes with a red flashing Temp LED, the intake air filter is obstructed; escalate to a technician for vacuum cleaning.

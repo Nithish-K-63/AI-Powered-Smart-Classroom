@@ -1,0 +1,11 @@
+Campus AV Department - Wall Mounted Sound System SOP (SOP-SPK-04)
+Page 1: Power & Volume Levels
+1. Ensure the amplifier in the podium equipment rack has its power switch ON (Blue pilot light).
+2. Check the master output volume knob on the amplifier faceplate; set between 10 o'clock and 12 o'clock positions.
+3. If sound is missing from PC playback, verify the computer audio output device is set to 'Crestron / Extron AV Audio (HDMI)'.
+4. Ensure the PC operating system volume is set to 80% and unmuted in the Windows taskbar.
+
+Page 2: Distorted or Buzzing Sound
+1. If an audible ground hum (60Hz buzz) occurs when connecting a 3.5mm aux jack, flip the 'Ground Lift' switch on the podium DI box.
+2. Replace damaged 3.5mm stereo patch cables.
+3. Ensure no high-power laptop chargers or mobile phones rest directly upon the audio mixer enclosure.

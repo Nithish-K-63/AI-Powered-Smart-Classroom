@@ -1,0 +1,17 @@
+Campus AV Department - Classroom Audio & Microphone Standard Operating Procedure (SOP-MIC-03)
+Page 1: Wireless Lapel & Handheld Microphone Setup
+1. Slide open the transmitter battery compartment and verify two fresh AA alkaline batteries are inserted with correct polarity (+ / -).
+2. Slide the transmitter power switch to 'ON'. A green LED indicates adequate battery level; red LED indicates under 30 minutes remaining.
+3. Confirm that the wireless receiver channel in the podium rack matches the transmitter frequency group (Default: Group 1, Channel 4).
+4. Verify the RF signal indicator LED on the podium receiver illuminates green when the mic is switched on.
+
+Page 2: No Sound & Audio Muting Checks
+1. Check the physical toggle switch on top of the transmitter pack; verify it is NOT set to 'MUTE'.
+2. Check the podium master mixer console: Ensure the 'MIC 1' fader is raised to the '0 dB' unity mark.
+3. Verify the master 'Mute All' button on the podium touch panel is toggled OFF (illuminated green, not red).
+4. If audio is still absent, inspect the lavalier microphone mini-XLR cable connector into the bodypack and tighten the locking collar.
+
+Page 3: Feedback Squeal, Static & Acoustic Interference
+1. To stop immediate feedback howling, pull down the podium MIC fader by 6 dB and step away from the overhead speakers.
+2. Keep lapel microphone clipped 6 to 8 inches below your mouth, pointing upwards toward the chin.
+3. If intermittent crackling or static occurs, switch the wireless receiver channel to Channel 6 to avoid Wi-Fi band congestion.
