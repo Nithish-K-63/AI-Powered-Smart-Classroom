@@ -18,7 +18,20 @@ if (fs.existsSync(venvWin)) {
   pythonCmd = venvPosix;
 }
 
-const args = ['-m', 'uvicorn', 'main:app', '--reload', '--port', '8000'];
+const args = [
+  '-m',
+  'uvicorn',
+  'main:app',
+  '--reload',
+  '--reload-dir',
+  path.join(rootDir, 'backend'),
+  '--reload-exclude',
+  'data',
+  '--reload-exclude',
+  'frontend',
+  '--port',
+  '8000',
+];
 
 const proc = spawn(pythonCmd, args, {
   cwd: rootDir,

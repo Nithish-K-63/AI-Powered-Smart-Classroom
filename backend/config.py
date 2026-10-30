@@ -40,7 +40,7 @@ class Settings:
     # MongoDB
     MONGODB_URI: str = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "smart_classroom_av")
-    MONGODB_TIMEOUT_MS: int = int(os.getenv("MONGODB_TIMEOUT_MS", "1500"))
+    MONGODB_TIMEOUT_MS: int = int(os.getenv("MONGODB_TIMEOUT_MS", "500"))
 
     # Local Persistence Fallback
     LOCAL_STORE_PATH: Path = ROOT_DIR / "data" / "live_complaints.json"

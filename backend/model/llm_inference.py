@@ -149,7 +149,7 @@ class Qwen3InferenceEngine:
                 req = urllib.request.Request(models_url)
                 if api_key:
                     req.add_header("Authorization", f"Bearer {api_key}")
-                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                with urllib.request.urlopen(req, timeout=0.25) as resp:
                     if resp.status == 200:
                         self.endpoint_url = url
                         self.endpoint_model = model_name
